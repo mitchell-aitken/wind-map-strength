@@ -38,6 +38,12 @@
       display: inline-block;
       margin-right: 6px;
     }
+
+    button {
+      padding: 5px 10px;
+      font-size: 14px;
+      margin-top: 8px;
+    }
   </style>
 </head>
 <body>
@@ -54,6 +60,8 @@
   <label>Sample every N points: <span id="sampleValue">10</span>
     <input type="range" id="sampleSlider" min="1" max="50" step="1" value="10" />
   </label>
+
+  <button id="applyButton">Apply Changes</button>
 </div>
 
 <div id="map"></div>
@@ -79,18 +87,13 @@
   const sampleSlider = document.getElementById('sampleSlider');
   const scaleDisplay = document.getElementById('scaleValue');
   const sampleDisplay = document.getElementById('sampleValue');
+  const applyButton = document.getElementById('applyButton');
 
-  scaleSlider.oninput = () => {
-    scaleDisplay.textContent = scaleSlider.value;
-    plotWindVectors();
-  };
-
-  sampleSlider.oninput = () => {
-    sampleDisplay.textContent = sampleSlider.value;
-    plotWindVectors();
-  };
+  scaleSlider.oninput = () => scaleDisplay.textContent = scaleSlider.value;
+  sampleSlider.oninput = () => sampleDisplay.textContent = sampleSlider.value;
 
   document.getElementById('upload').addEventListener('change', handleFile, false);
+  applyButton.addEventListener('click', plotWindVectors);
 
   function handleFile(event) {
     const file = event.target.files[0];
@@ -125,7 +128,7 @@
       }
 
       map.setView([allVectors[0].lat, allVectors[0].lon], 15);
-      plotWindVectors();
+      plotWindVectors();  // Initial render
     };
     reader.readAsText(file);
   }
