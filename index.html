@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Drone Wind Map Viewer</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <style>
+    body { margin: 0; font-family: sans-serif; }
+    #map { height: 90vh; width: 100vw; }
+    #controls {
+      position: fixed;
+      top: 10px; left: 10px;
+      z-index: 1000;
+      background: white;
+      padding: 10px;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+    }
+    label, input { display: block; margin-bottom: 6px; }
+
+    .legend {
+      position: absolute;
+      bottom: 10px;
+      right: 10px;
+      background: white;
+      padding: 10px;
+      border-radius: 6px;
+      border: 1px solid #ccc;
+      font-size: 12px;
+      line-height: 1.4em;
+    }
+
+    .legend-box {
+      width: 12px;
+      height: 12px;
+      display: inline-block;
+      margin-right: 6px;
+    }
+  </style>
+</head>
+<body>
+
+<div id="controls">
+  <label>Select drone file (.txt):
+    <input type="file" id="upload" accept=".csv,.txt" />
+  </label>
+
+  <label>Arrow size: <span id="scaleValue">0.0003</span>
+    <input type="range" id="scaleSlider" min="0.00005" max="0.001" step="0.00005" value="0.0003" />
+  </label>
+
+  <label>Sample every N points: <span id="sampleValue">10</span>
+    <input type="range" id="sampleSlider" min="1" max="50" step="1" value="10" />
+  </label>
+</div>
+
+<div id="map"></div>
+
+<div class="legend">
+  <div><span class="legend-box" style="background:red;"></span> >10 m/s</div>
+  <div><span class="legend-box" style="background:orange;"></span> 5–10 m/s</div>
+  <div><span class="legend-box" style="background:yellow;"></span> 2–5 m/s</div>
+  <div><span class="legend-box" style="background:green;"></span> <2 m/s</div>
+</div>
+
+<script>
+  const map = L.map('map').setView([0, 0], 2);
+  let allVectors = [];
+  let currentArrows = [];
+
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 18,
+    attribution: 'Map data © <a href="https://openstreetmap.org">OpenStreetMap</a>'
+  }).addTo(map);
+
+  const scaleSlider = document.getElementById('scaleSlider');
+  const sampleSlider = document.getElementById('sampleSlider');
+  const scaleDisplay = document.getElementById('scaleValue');
+  const sampleDisplay = document.getElementById('sampleValue');
+
+  scaleSlider.oninput = () => {
+    scaleDisplay.textContent = scaleSlider.value;
+    plotWindVectors();
+  };
+
+  sampleSlider.oninput = () => {
+    sampleDisplay.textContent = sampleSlider.value;
+    plotWindVectors();
+  };
+
+  document.getElementById('upload').addEventListener('change', handleFile, false);
+
+  function handleFile(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = function (e) {
+      const lines = e.target.result.split('\n');
+      const dataLines = lines.slice(4).filter(l => l.trim().length > 0);
+      allVectors = [];
+
+      dataLines.forEach(line => {
+        const cols = line.split(',');
+        if (cols.length < 15) return;
+
+        const flightKey = parseInt(cols[14]);
+        if (isNaN(flightKey) || flightKey <= 1) return;
+
+        const lat = parseFloat(cols[1]) / 1e7;
+        const lon = parseFloat(cols[2]) / 1e7;
+        const u = -parseFloat(cols[9]);
+        const v = -parseFloat(cols[8]);
+        const speed = Math.sqrt(u*u + v*v);
+
+        if (isNaN(lat) || isNaN(lon) || isNaN(u) || isNaN(v)) return;
+        allVectors.push({ lat, lon, u, v, speed });
+      });
+
+      if (allVectors.length === 0) {
+        alert("No valid wind vectors found.");
+        return;
+      }
+
+      map.setView([allVectors[0].lat, allVectors[0].lon], 15);
+      plotWindVectors();
+    };
+    reader.readAsText(file);
+  }
+
+  function plotWindVectors() {
+    const scale = parseFloat(scaleSlider.value);
+    const step = parseInt(sampleSlider.value);
+
+    currentArrows.forEach(marker => map.removeLayer(marker));
+    currentArrows = [];
+
+    for (let i = 0; i < allVectors.length; i += step) {
+      const { lat, lon, u, v, speed } = allVectors[i];
+      const lat2 = lat + v * scale;
+      const lon2 = lon + u * scale;
+      const color = getSpeedColor(speed);
+      const angle = Math.atan2(lat2 - lat, lon2 - lon) * 180 / Math.PI;
+
+      const arrowMarker = L.marker([lat2, lon2], {
+        icon: L.divIcon({
+          className: 'arrow-icon',
+          html: `<div style="transform: rotate(${angle}deg); color:${color}; font-size:16px;">&#9654;</div>`,
+          iconSize: [16, 16],
+          iconAnchor: [8, 8]
+        })
+      }).addTo(map);
+
+      arrowMarker.bindPopup(`Speed: ${speed.toFixed(2)} m/s`);
+      currentArrows.push(arrowMarker);
+    }
+  }
+
+  function getSpeedColor(speed) {
+    if (speed > 10) return "red";
+    if (speed > 5) return "orange";
+    if (speed > 2) return "yellow";
+    return "green";
+  }
+</script>
+
+</body>
+</html>
