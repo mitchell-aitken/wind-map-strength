@@ -10,8 +10,7 @@
     body { margin: 0; font-family: sans-serif; }
     #map { height: 90vh; width: 100vw; }
     #controls {
-      position: fixed;
-      top: 10px; left: 10px;
+      position: fixed; top: 10px; left: 10px;
       z-index: 1000;
       background: white;
       padding: 10px;
@@ -19,30 +18,26 @@
       border-radius: 6px;
     }
     label, input { display: block; margin-bottom: 6px; }
+    button { padding: 5px 10px; font-size: 14px; margin-top: 8px; }
 
-    .legend {
-      position: absolute;
-      bottom: 10px;
-      right: 10px;
+    /* Legend inside a Leaflet control */
+    .wind-legend {
       background: white;
       padding: 10px;
       border-radius: 6px;
       border: 1px solid #ccc;
       font-size: 12px;
       line-height: 1.4em;
+      max-height: 70vh;
+      overflow: auto;
+      min-width: 160px;
     }
-
+    .legend-row { display: flex; align-items: center; margin-bottom: 4px; }
     .legend-box {
-      width: 12px;
-      height: 12px;
+      width: 12px; height: 12px;
       display: inline-block;
       margin-right: 6px;
-    }
-
-    button {
-      padding: 5px 10px;
-      font-size: 14px;
-      margin-top: 8px;
+      border: 1px solid #999;
     }
   </style>
 </head>
@@ -66,34 +61,130 @@
 
 <div id="map"></div>
 
-<div class="legend">
-  <div><span class="legend-box" style="background:red;"></span> >10 m/s</div>
-  <div><span class="legend-box" style="background:orange;"></span> 5–10 m/s</div>
-  <div><span class="legend-box" style="background:yellow;"></span> 2–5 m/s</div>
-  <div><span class="legend-box" style="background:green;"></span> <2 m/s</div>
-</div>
-
 <script>
+  const NUM_BINS = 12; // more colors, increase if you like
+
   const map = L.map('map').setView([0, 0], 2);
   let allVectors = [];
   let currentArrows = [];
 
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 18,
-    attribution: 'Map data © <a href="https://openstreetmap.org">OpenStreetMap</a>'
+    attribution: 'Map data © OpenStreetMap'
   }).addTo(map);
 
-  const scaleSlider = document.getElementById('scaleSlider');
-  const sampleSlider = document.getElementById('sampleSlider');
-  const scaleDisplay = document.getElementById('scaleValue');
+  // Controls
+  const scaleSlider   = document.getElementById('scaleSlider');
+  const sampleSlider  = document.getElementById('sampleSlider');
+  const scaleDisplay  = document.getElementById('scaleValue');
   const sampleDisplay = document.getElementById('sampleValue');
-  const applyButton = document.getElementById('applyButton');
+  const applyButton   = document.getElementById('applyButton');
 
-  scaleSlider.oninput = () => scaleDisplay.textContent = scaleSlider.value;
+  scaleSlider.oninput  = () => scaleDisplay.textContent  = scaleSlider.value;
   sampleSlider.oninput = () => sampleDisplay.textContent = sampleSlider.value;
 
   document.getElementById('upload').addEventListener('change', handleFile, false);
-  applyButton.addEventListener('click', plotWindVectors);
+  applyButton.addEventListener('click', () => {
+    rebuildScaleFromData(); // in case filters change later
+    plotWindVectors();
+    updateLegend();
+  });
+
+  // Dynamic color scale state
+  let MIN_SPEED = 0;
+  let MAX_SPEED = 30;
+  let thresholds = [];
+  let colors = [];
+
+  // Build a discrete blue-to-red ramp
+  function buildColorRamp(bins) {
+    const out = [];
+    for (let i = 0; i < bins; i++) {
+      const t = i / (bins - 1);                 // 0..1
+      const hue = 220 * (1 - t);               // 220 (blue) to 0 (red)
+      out.push(`hsl(${hue}, 100%, 50%)`);
+    }
+    return out;
+  }
+
+  function buildThresholds(minVal, maxVal, bins) {
+    const arr = [];
+    const step = (maxVal - minVal) / bins;
+    for (let i = 1; i <= bins; i++) arr.push(minVal + i * step);
+    return arr;
+  }
+
+  function rebuildScaleFromData() {
+    if (allVectors.length === 0) {
+      MIN_SPEED = 0; MAX_SPEED = 30;
+    } else {
+      let sMin = Infinity, sMax = -Infinity;
+      for (const v of allVectors) {
+        if (!Number.isFinite(v.speed)) continue;
+        if (v.speed < sMin) sMin = v.speed;
+        if (v.speed > sMax) sMax = v.speed;
+      }
+      // Pad a little so colors are not all in one bin when range is tight
+      const pad = Math.max(0.5, (sMax - sMin) * 0.05);
+      MIN_SPEED = Math.max(0, sMin - pad);
+      MAX_SPEED = sMax + pad;
+      if (MAX_SPEED - MIN_SPEED < 1) { // safety for tiny range
+        MIN_SPEED = Math.max(0, sMin - 0.5);
+        MAX_SPEED = sMax + 0.5;
+      }
+    }
+    thresholds = buildThresholds(MIN_SPEED, MAX_SPEED, NUM_BINS);
+    colors = buildColorRamp(NUM_BINS);
+  }
+
+  function colorForSpeed(speed) {
+    const s = Math.max(MIN_SPEED, Math.min(speed, MAX_SPEED));
+    const idx = Math.min(
+      colors.length - 1,
+      Math.floor((s - MIN_SPEED) / (MAX_SPEED - MIN_SPEED) * (colors.length - 1))
+    );
+    return colors[idx];
+  }
+
+  // Legend as a Leaflet control (sits above the map)
+  const legendControl = L.control({ position: 'bottomright' });
+  legendControl.onAdd = function () {
+    const div = L.DomUtil.create('div', 'wind-legend');
+    div.innerHTML = '<div style="font-weight:700;margin-bottom:6px;">Wind speed, m/s</div>';
+    return div;
+  };
+  legendControl.addTo(map);
+
+  function updateLegend() {
+    const div = legendControl.getContainer();
+    div.innerHTML = '<div style="font-weight:700;margin-bottom:6px;">Wind speed, m/s</div>';
+    let lower = MIN_SPEED;
+    for (let i = 0; i < thresholds.length; i++) {
+      const upper = thresholds[i];
+      const row = document.createElement('div');
+      row.className = 'legend-row';
+      const box = document.createElement('span');
+      box.className = 'legend-box';
+      box.style.background = colors[i];
+      const label = document.createElement('span');
+      label.textContent = `${lower.toFixed(1)} - ${upper.toFixed(1)}`;
+      row.appendChild(box);
+      row.appendChild(label);
+      div.appendChild(row);
+      lower = upper;
+    }
+    // Top open-ended bin
+    const topRow = document.createElement('div');
+    topRow.className = 'legend-row';
+    const topBox = document.createElement('span');
+    topBox.className = 'legend-box';
+    topBox.style.background = colors[colors.length - 1];
+    const topLabel = document.createElement('span');
+    topLabel.textContent = `>= ${thresholds[thresholds.length - 1].toFixed(1)}`;
+    topRow.appendChild(topBox);
+    topRow.appendChild(topLabel);
+    div.appendChild(topRow);
+  }
 
   function handleFile(event) {
     const file = event.target.files[0];
@@ -118,7 +209,7 @@
         const v = -parseFloat(cols[8]);
         const speed = Math.sqrt(u*u + v*v);
 
-        if (isNaN(lat) || isNaN(lon) || isNaN(u) || isNaN(v)) return;
+        if (!Number.isFinite(lat) || !Number.isFinite(lon) || !Number.isFinite(u) || !Number.isFinite(v) || !Number.isFinite(speed)) return;
         allVectors.push({ lat, lon, u, v, speed });
       });
 
@@ -128,7 +219,9 @@
       }
 
       map.setView([allVectors[0].lat, allVectors[0].lon], 15);
-      plotWindVectors();  // Initial render
+      rebuildScaleFromData();
+      plotWindVectors();
+      updateLegend();
     };
     reader.readAsText(file);
   }
@@ -144,7 +237,7 @@
       const { lat, lon, u, v, speed } = allVectors[i];
       const lat2 = lat + v * scale;
       const lon2 = lon + u * scale;
-      const color = getSpeedColor(speed);
+      const color = colorForSpeed(speed);
       const angle = Math.atan2(lat2 - lat, lon2 - lon) * 180 / Math.PI;
 
       const arrowMarker = L.marker([lat2, lon2], {
@@ -161,12 +254,9 @@
     }
   }
 
-  function getSpeedColor(speed) {
-    if (speed > 10) return "red";
-    if (speed > 5) return "orange";
-    if (speed > 2) return "yellow";
-    return "green";
-  }
+  // Initial empty legend
+  rebuildScaleFromData();
+  updateLegend();
 </script>
 
 </body>
