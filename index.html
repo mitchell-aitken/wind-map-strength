@@ -16,9 +16,11 @@
       padding: 10px;
       border: 1px solid #ccc;
       border-radius: 6px;
+      max-width: 320px;
     }
     label, input { display: block; margin-bottom: 6px; }
     button { padding: 5px 10px; font-size: 14px; margin-top: 8px; }
+    .meta { font-size: 12px; color: #444; margin-top: 6px; }
 
     /* Legend inside a Leaflet control */
     .wind-legend {
@@ -44,8 +46,8 @@
 <body>
 
 <div id="controls">
-  <label>Select drone file (.txt):
-    <input type="file" id="upload" accept=".csv,.txt" />
+  <label>Select one or more drone files (.txt or .csv):
+    <input type="file" id="upload" accept=".csv,.txt" multiple />
   </label>
 
   <label>Arrow spread: <span id="scaleValue">0.0003</span>
@@ -57,12 +59,13 @@
   </label>
 
   <button id="applyButton">Apply Changes</button>
+  <div class="meta" id="meta"></div>
 </div>
 
 <div id="map"></div>
 
 <script>
-  const NUM_BINS = 12; // more colors, increase if you like
+  const NUM_BINS = 12; // increase if you want more color bands
 
   const map = L.map('map').setView([0, 0], 2);
   let allVectors = [];
@@ -79,13 +82,14 @@
   const scaleDisplay  = document.getElementById('scaleValue');
   const sampleDisplay = document.getElementById('sampleValue');
   const applyButton   = document.getElementById('applyButton');
+  const metaDiv       = document.getElementById('meta');
 
   scaleSlider.oninput  = () => scaleDisplay.textContent  = scaleSlider.value;
   sampleSlider.oninput = () => sampleDisplay.textContent = sampleSlider.value;
 
-  document.getElementById('upload').addEventListener('change', handleFile, false);
+  document.getElementById('upload').addEventListener('change', handleFiles, false);
   applyButton.addEventListener('click', () => {
-    rebuildScaleFromData(); // in case filters change later
+    rebuildScaleFromData(); // reflect any changes in filters
     plotWindVectors();
     updateLegend();
   });
@@ -100,8 +104,8 @@
   function buildColorRamp(bins) {
     const out = [];
     for (let i = 0; i < bins; i++) {
-      const t = i / (bins - 1);                 // 0..1
-      const hue = 220 * (1 - t);               // 220 (blue) to 0 (red)
+      const t = i / (bins - 1);          // 0..1
+      const hue = 220 * (1 - t);         // 220 (blue) to 0 (red)
       out.push(`hsl(${hue}, 100%, 50%)`);
     }
     return out;
@@ -124,11 +128,10 @@
         if (v.speed < sMin) sMin = v.speed;
         if (v.speed > sMax) sMax = v.speed;
       }
-      // Pad a little so colors are not all in one bin when range is tight
       const pad = Math.max(0.5, (sMax - sMin) * 0.05);
       MIN_SPEED = Math.max(0, sMin - pad);
       MAX_SPEED = sMax + pad;
-      if (MAX_SPEED - MIN_SPEED < 1) { // safety for tiny range
+      if (MAX_SPEED - MIN_SPEED < 1) {
         MIN_SPEED = Math.max(0, sMin - 0.5);
         MAX_SPEED = sMax + 0.5;
       }
@@ -146,7 +149,7 @@
     return colors[idx];
   }
 
-  // Legend as a Leaflet control (sits above the map)
+  // Legend as a Leaflet control
   const legendControl = L.control({ position: 'bottomright' });
   legendControl.onAdd = function () {
     const div = L.DomUtil.create('div', 'wind-legend');
@@ -186,44 +189,82 @@
     div.appendChild(topRow);
   }
 
-  function handleFile(event) {
-    const file = event.target.files[0];
-    if (!file) return;
+  // Read many files, parse, and merge
+  async function handleFiles(event) {
+    const files = Array.from(event.target.files || []);
+    if (files.length === 0) return;
 
-    const reader = new FileReader();
-    reader.onload = function (e) {
-      const lines = e.target.result.split('\n');
-      const dataLines = lines.slice(4).filter(l => l.trim().length > 0);
-      allVectors = [];
+    metaDiv.textContent = 'Reading files...';
+    allVectors = [];
 
-      dataLines.forEach(line => {
-        const cols = line.split(',');
-        if (cols.length < 15) return;
+    try {
+      const texts = await Promise.all(files.map(readFileAsText));
+      let kept = 0;
 
-        const flightKey = parseInt(cols[14]);
-        if (isNaN(flightKey) || flightKey <= 1) return;
-
-        const lat = parseFloat(cols[1]) / 1e7;
-        const lon = parseFloat(cols[2]) / 1e7;
-        const u = -parseFloat(cols[9]);
-        const v = -parseFloat(cols[8]);
-        const speed = Math.sqrt(u*u + v*v);
-
-        if (!Number.isFinite(lat) || !Number.isFinite(lon) || !Number.isFinite(u) || !Number.isFinite(v) || !Number.isFinite(speed)) return;
-        allVectors.push({ lat, lon, u, v, speed });
-      });
+      for (const txt of texts) {
+        const { vectors, keptCount } = parseVectorsFromText(txt);
+        kept += keptCount;
+        allVectors.push(...vectors);
+      }
 
       if (allVectors.length === 0) {
-        alert("No valid wind vectors found.");
+        alert('No valid wind vectors found.');
+        metaDiv.textContent = 'No valid data.';
         return;
       }
 
+      // Center map on the first valid point
       map.setView([allVectors[0].lat, allVectors[0].lon], 15);
+
       rebuildScaleFromData();
       plotWindVectors();
       updateLegend();
-    };
-    reader.readAsText(file);
+
+      metaDiv.textContent = `Files: ${files.length}, vectors plotted: ${allVectors.length} (kept rows across files: ${kept}).`;
+    } catch (err) {
+      console.error(err);
+      alert('There was an error reading one or more files.');
+      metaDiv.textContent = 'Error loading files.';
+    }
+  }
+
+  function readFileAsText(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(reader.error);
+      reader.onload = () => resolve(reader.result);
+      reader.readAsText(file);
+    });
+  }
+
+  // Keeps your original parsing rules
+  function parseVectorsFromText(text) {
+    const lines = text.split('\n');
+    const dataLines = lines.slice(4).filter(l => l.trim().length > 0);
+
+    const vectors = [];
+    let keptCount = 0;
+
+    for (const line of dataLines) {
+      const cols = line.split(',');
+      if (cols.length < 15) continue;
+
+      const flightKey = parseInt(cols[14]);
+      if (isNaN(flightKey) || flightKey <= 1) continue;
+
+      const lat = parseFloat(cols[1]) / 1e7;
+      const lon = parseFloat(cols[2]) / 1e7;
+      const u = -parseFloat(cols[9]);
+      const v = -parseFloat(cols[8]);
+      const speed = Math.sqrt(u*u + v*v);
+
+      if (!Number.isFinite(lat) || !Number.isFinite(lon) || !Number.isFinite(u) || !Number.isFinite(v) || !Number.isFinite(speed)) continue;
+
+      vectors.push({ lat, lon, u, v, speed });
+      keptCount++;
+    }
+
+    return { vectors, keptCount };
   }
 
   function plotWindVectors() {
